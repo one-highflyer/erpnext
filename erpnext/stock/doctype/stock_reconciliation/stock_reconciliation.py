@@ -380,6 +380,7 @@ class StockReconciliation(StockController):
 			)
 
 			if not current_qty:
+				entry.qty = 0
 				continue
 
 			total_current_qty += current_qty
@@ -918,7 +919,8 @@ class StockReconciliation(StockController):
 		has_serial_no = False
 		for row in self.items:
 			sl_entries.append(self.get_sle_for_items(row))
-			if row.serial_and_batch_bundle and row.current_serial_and_batch_bundle:
+			# A zero count has no inward stock ledger entry to reverse.
+			if row.qty and row.serial_and_batch_bundle and row.current_serial_and_batch_bundle:
 				sl_entries.append(self.get_sle_for_items(row, current_bundle=False))
 
 		if sl_entries:
