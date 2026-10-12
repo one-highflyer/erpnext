@@ -2009,7 +2009,7 @@ def create_serial_batch_no_ledgers(
 		doc.append(
 			"entries",
 			{
-				"qty": (flt(row.qty) or 1.0) * (1 if type_of_transaction == "Inward" else -1),
+				"qty": _get_entry_qty(row, doc) * (1 if type_of_transaction == "Inward" else -1),
 				"warehouse": warehouse,
 				"batch_no": row.batch_no or batch_no,
 				"serial_no": row.serial_no,
@@ -2024,6 +2024,20 @@ def create_serial_batch_no_ledgers(
 	frappe.msgprint(_("Serial and Batch Bundle created"), alert=True)
 
 	return doc
+
+
+def _get_entry_qty(entry, bundle):
+	# An inward reconciliation bundle stores the counted balance, including zero.
+	if (
+		bundle.voucher_type == "Stock Reconciliation"
+		and bundle.type_of_transaction == "Inward"
+		and entry.get("batch_no")
+		and not entry.get("serial_no")
+		and entry.get("qty") not in (None, "")
+	):
+		return flt(entry.get("qty"))
+
+	return flt(entry.get("qty")) or 1.0
 
 
 def get_batch(item_code):
@@ -2078,7 +2092,7 @@ def update_serial_batch_no_ledgers(bundle, entries, child_row, parent_doc, wareh
 		doc.append(
 			"entries",
 			{
-				"qty": (flt(d.get("qty")) or 1.0) * (1 if doc.type_of_transaction == "Inward" else -1),
+				"qty": _get_entry_qty(d, doc) * (1 if doc.type_of_transaction == "Inward" else -1),
 				"warehouse": warehouse or d.get("warehouse"),
 				"batch_no": d.get("batch_no"),
 				"serial_no": d.get("serial_no"),
