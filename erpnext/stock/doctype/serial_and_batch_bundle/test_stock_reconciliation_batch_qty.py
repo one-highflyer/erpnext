@@ -140,6 +140,18 @@ class TestStockReconciliationBatchQty(FrappeTestCase):
 			self.assertEqual(bundle.total_qty, 1)
 			self.row.serial_and_batch_bundle = bundle.name
 
+	def test_zero_batch_count_still_requires_serial_number_for_serial_item(self):
+		item = frappe.get_doc("Item", self.item)
+		item.has_serial_no = 1
+		item.save()
+		with self.assertRaises(frappe.ValidationError):
+			add_serial_batch_ledgers(
+				json.dumps([{"batch_no": self.batches[0], "qty": 0}]),
+				json.dumps(self.row),
+				json.dumps(self.parent),
+				self.warehouse,
+			)
+
 	def test_zero_count_reconciliation_clears_batch_stock(self):
 		make_stock_entry(
 			item_code=self.item,

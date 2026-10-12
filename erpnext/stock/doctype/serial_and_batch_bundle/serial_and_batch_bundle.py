@@ -1101,9 +1101,10 @@ class SerialandBatchBundle(Document):
 		for row in self.entries:
 			if not row.qty and row.batch_no and not row.serial_no:
 				# Reconciliation bundles store counted and current balances, including empty batches.
-				if self.voucher_type == "Stock Reconciliation" and (
-					self.type_of_transaction == "Inward"
-					or (self.type_of_transaction == "Outward" and not self.has_serial_no)
+				if (
+					self.voucher_type == "Stock Reconciliation"
+					and self.type_of_transaction in ("Inward", "Outward")
+					and not self.has_serial_no
 				):
 					continue
 
