@@ -200,3 +200,135 @@ class TestStockReconciliationBatchQty(FrappeTestCase):
 		return add_serial_batch_ledgers(
 			json.dumps(entries), json.dumps(self.row), json.dumps(self.parent), self.row.warehouse
 		)
+
+	def test_zero_counts_with_empty_batches_save_submit_and_cancel(self):
+		initial_quantities = [10, 0, 6, 0, 0, 4, 0]
+		unselected_batch = (
+			frappe.get_doc({"doctype": "Batch", "item": self.item, "batch_id": frappe.generate_hash()})
+			.insert()
+			.name
+		)
+		for batch, qty in zip([*self.batches, unselected_batch], [*initial_quantities, 9], strict=True):
+			if qty:
+				make_stock_entry(
+					item_code=self.item,
+					target=self.warehouse,
+					company=self.company,
+					qty=qty,
+					rate=5,
+					batch_no=batch,
+					use_serial_batch_fields=0,
+				)
+
+		self.assert_batch_balances([*self.batches, unselected_batch], [*initial_quantities, 9])
+		reconciliation = self.make_reconciliation([0] * 7)
+		reconciliation.insert()
+		current_bundle = reconciliation.items[0].current_serial_and_batch_bundle
+		self.assertTrue(current_bundle)
+		reconciliation.save()
+		reconciliation.reload()
+		self.assertEqual(reconciliation.items[0].current_serial_and_batch_bundle, current_bundle)
+		self.assertEqual(reconciliation.items[0].current_qty, 20)
+		self.assert_batch_balances([*self.batches, unselected_batch], [*initial_quantities, 9])
+		self.assertEqual(
+			frappe.db.get_value("Bin", {"item_code": self.item, "warehouse": self.warehouse}, "actual_qty"),
+			29,
+		)
+
+		reconciliation.submit()
+		reconciliation.reload()
+		self.assertEqual(reconciliation.docstatus, 1)
+		self.assertEqual(reconciliation.items[0].qty, 0)
+		self.assert_batch_balances([*self.batches, unselected_batch], [0] * 7 + [9])
+		self.assertEqual(
+			frappe.db.get_value("Bin", {"item_code": self.item, "warehouse": self.warehouse}, "actual_qty"),
+			9,
+		)
+
+		reconciliation.cancel()
+		reconciliation.reload()
+		self.assertEqual(reconciliation.docstatus, 2)
+		self.assert_batch_balances([*self.batches, unselected_batch], [*initial_quantities, 9])
+		self.assertEqual(
+			frappe.db.get_value("Bin", {"item_code": self.item, "warehouse": self.warehouse}, "actual_qty"),
+			29,
+		)
+
+	def test_positive_count_for_empty_batch_uses_zero_current_balance(self):
+		make_stock_entry(
+			item_code=self.item,
+			target=self.warehouse,
+			company=self.company,
+			qty=10,
+			rate=5,
+			batch_no=self.batches[0],
+			use_serial_batch_fields=0,
+		)
+		reconciliation = self.make_reconciliation([0, 2, 0, 0, 0, 0, 0])
+		reconciliation.insert()
+		self.assertEqual(reconciliation.items[0].current_qty, 10)
+		current_bundle = frappe.get_doc(
+			"Serial and Batch Bundle", reconciliation.items[0].current_serial_and_batch_bundle
+		)
+		self.assertEqual([entry.qty for entry in current_bundle.entries], [-10, 0, 0, 0, 0, 0, 0])
+		reconciliation.submit()
+		self.assert_batch_balances(self.batches, [0, 2, 0, 0, 0, 0, 0])
+		reconciliation.cancel()
+		self.assert_batch_balances(self.batches, [10, 0, 0, 0, 0, 0, 0])
+
+	def test_other_outward_bundles_still_reject_zero_batch_quantity(self):
+		for voucher_type, has_serial_no in [("Stock Entry", 0), ("Stock Reconciliation", 1)]:
+			with self.subTest(voucher_type=voucher_type, has_serial_no=has_serial_no):
+				bundle = frappe.get_doc(
+					{
+						"doctype": "Serial and Batch Bundle",
+						"voucher_type": voucher_type,
+						"type_of_transaction": "Outward",
+						"item_code": self.item,
+						"has_batch_no": 1,
+						"has_serial_no": has_serial_no,
+						"entries": [{"batch_no": self.batches[0], "qty": 0}],
+					}
+				)
+				with self.assertRaises(frappe.ValidationError):
+					bundle.validate_serial_and_batch_no()
+
+	def make_reconciliation(self, quantities):
+		reconciliation = frappe.new_doc("Stock Reconciliation")
+		reconciliation.update(self.parent)
+		reconciliation.purpose = "Stock Reconciliation"
+		reconciliation.posting_time = nowtime()
+		reconciliation.set_posting_time = 1
+		row = reconciliation.append(
+			"items",
+			{
+				"item_code": self.item,
+				"warehouse": self.warehouse,
+				"qty": sum(quantities),
+				"valuation_rate": 5,
+			},
+		)
+		bundle = add_serial_batch_ledgers(
+			json.dumps(
+				[{"batch_no": batch, "qty": qty} for batch, qty in zip(self.batches, quantities, strict=True)]
+			),
+			json.dumps(row.as_dict()),
+			json.dumps(reconciliation.as_dict()),
+			self.warehouse,
+		)
+		row.serial_and_batch_bundle = bundle.name
+		return reconciliation
+
+	def assert_batch_balances(self, batches, quantities):
+		for batch, qty in zip(batches, quantities, strict=True):
+			with self.subTest(batch=batch):
+				self.assertEqual(
+					get_batch_qty(
+						batch,
+						self.warehouse,
+						for_stock_levels=True,
+						consider_negative_batches=True,
+						ignore_reserved_stock=True,
+					),
+					qty,
+				)
